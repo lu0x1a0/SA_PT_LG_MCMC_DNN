@@ -34,7 +34,11 @@ class FC(nn.Module):
     def encode(self):
         return torch.cat([x.flatten() for x in self.parameters()])
     def decode(self,w):
-        return 
+        cumidx = 0
+        for p in self.parameters():
+            nneurons = torch.numel(p)
+            p.data = w[cumidx:nneurons].reshape(p.data.shape)
+            cumidx += nneurons
 class MCMC:
     def __init__(self,trainx,trainy,testx,testy, use_langevin,langevin_prob,learning_rate,n_full_batches,networktype = 'fc', hidden_size = [5] ):
         """ assumes that y is normally distributed with mean represented by nn model:
@@ -56,7 +60,9 @@ class MCMC:
                 # the code by Dr Chandra uses normal proposal for tau instead that might be easier to evaluate.
                 # both proposal distribution by R.C uses a step for std. 
 
-                propose w|tau,y,x from N(w_ld,)
+                for neww|tau,y,x 
+                propose w*|wi ~ N(wi+sgd,sigma2)
+                calc diff in proposal probability: - -N(wi+sgd,sigma2)(w*)
                 accept-reject
             
         Args:
@@ -99,6 +105,7 @@ class MCMC:
             self.network = FC(self.network_shape)
             
             self.loss = nn.MSELoss()
+            self.optimiser = torch.optim.SGD(self.network.parameters(),lr = learning_rate)
     def p_theta(self): # p(theta)
         ...
     def p_theta_x(self): # p(theta|X)
@@ -109,23 +116,68 @@ class MCMC:
         ...
     def randomwalkproposal(self):
         ...
-    def sample(self, a,b,sigma2):
+    def sample(self, a,b,sigma):
         """[summary]
 
         Args:
             a ([type]): [param for tau prior]
             b ([type]): [param for tau prior]
-            sigma2 ([type]): [param for w prior]
+            sigma ([type]): [param for w prior]
         """
         # uses default torch init for weights and sample variance as starter (i.e. null model)
-        predY = self.network(self.trainx)
-        tau2 = np.zeros(self.n_iter)
-        tau2[0] = np.var(self.trainy) #np.random.rand(np.var(self.trainy))+0.00001
+        predY = torch.zeros((self.n_iter,len(self.trainy)))
+        predY[0,:] = self.network(self.trainx)
 
+        self.network(self.trainx)
+        tau2 = torch.zeros(self.n_iter)
+        tau2[0] = np.var(self.trainy) #np.random.rand(np.var(self.trainy))+0.00001
+        w_all    = torch.zeros((self,n_iter,self.n_weights))
+        w_all[0,:] = self.network.encode()
+        w_prior = torch.distributions.Normal(torch.zeros(w_all[0,:].shape),sigma)
+        
         tau_posterior_a = self.n_weights + a + 1
+        
         for i in range(1,self.n_iter+1):
             tau_posterior_b = b + sum((self.trainy-predY)**2)/2
-            tau2[i] = 1/torch.Gamma(tau_posterior_a,tau_posterior_b).sample()
+            tau2[i] = 1/torch.Gamma(tau_posterior_a,tau_posterior_b).sample() # 1/ for inverse gamma
+            
+            w_last = w_all[i-1,:]
+            # now we propose new w
+            if self.use_langevin:
+                # w + delta w : w+SGD
+                loss = self.loss(self.trainy,self.network(self.trainx))
+                self.optimiser.zero_grad()
+                loss.backward()
+                self.optimiser.step()
+                w_last_bar = self.network.encode()
+                w_star = torch.distributions.Normal(w_last_bar,sigma).sample()
+                
+                self.network.decode(proposal_w_star)
+                loss = self.loss(trainy,self.network(self.trainx))
+                self.optimiser.zero_grad()
+                loss.backward()
+                self.optimiser.step()
+                w_star_bar = self.network.encode()
+                
+                # q(wi|w*)/q(w*|wi)
+                log_proposal_ratio = (
+                    torch.distributions.MultivariateNormal(w_star_bar,torch.eye(len(w_star_bar))*sigma).log_prob(w_last) - 
+                    torch.distributions.MultivariateNormal(w_last_bar,torch.eye(len(w_star_bar))*sigma).log_prob(w_star)
+                )
+            else:
+                w_star = torch.distribution.Normal(w[i-1,:],sigma)
+                # q(wi|w*)/q(w*|wi)
+                log_proposal_ratio = 0
+            # pi(w*|y)/pi(wi|y) NOTE: R.C's code sampled both tau and w via MH, i'm sampling only w, hence different prior
+            # pi(w*|y) \sim  pi(w*)p(y|w*)
+            log_prior_ratio      = w_prior.log_prob(w_star)-w_prior.log_prob(w_last)
+            
+            log_y_likelihood = torch.distributions.Normal(torch.zeros(w_all[0,:].shape),torch.sqrt(tau2[i]))
+            log_likelihood_ratio = log_y_likelihood.log_prob(self.network)
+            # to calculate the accept reject we need 
+            # min(1, pi(w*|x)/pi(wi|x) *  q(wi|w*)/q(w*|wi) )
+            
+            mhprob = 
 from torchinfo import summary
 if __name__ == '__main__':
     mcmc = MCMC(np.zeros((100,5)),np.zeros((100,1)),np.zeros((100,5)),np.zeros((100,1)),True,1,0.01,1000,networktype='fc',hidden_size=[8,5,2])

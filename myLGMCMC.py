@@ -106,16 +106,10 @@ class MCMC:
             
             self.loss = nn.MSELoss()
             self.optimiser = torch.optim.SGD(self.network.parameters(),lr = learning_rate)
-    def p_theta(self): # p(theta)
-        ...
-    def p_theta_x(self): # p(theta|X)
-        ...
-    def p_x_theta(self): # p(X|theta)
-        ...
-    def proposal(self): # p(theta*|theta_t)
-        ...
-    def randomwalkproposal(self):
-        ...
+
+    def log_y_likelihood(self,w,tau2,x,y):
+        self.network.decode(w.clone())
+        return torch.log(torch.sqrt(tau2))*len(y)/2 - torch.sum( (y-self.network(x))**2)/(2*tau2)
     def sample(self, a,b,sigma):
         """[summary]
 
@@ -145,6 +139,7 @@ class MCMC:
             # now we propose new w
             if self.use_langevin:
                 # w + delta w : w+SGD
+                self.network.decode(w_last.clone())
                 loss = self.loss(self.trainy,self.network(self.trainx))
                 self.optimiser.zero_grad()
                 loss.backward()
@@ -152,7 +147,7 @@ class MCMC:
                 w_last_bar = self.network.encode()
                 w_star = torch.distributions.Normal(w_last_bar,sigma).sample()
                 
-                self.network.decode(proposal_w_star)
+                self.network.decode(w_star.clone())
                 loss = self.loss(trainy,self.network(self.trainx))
                 self.optimiser.zero_grad()
                 loss.backward()
@@ -172,12 +167,48 @@ class MCMC:
             # pi(w*|y) \sim  pi(w*)p(y|w*)
             log_prior_ratio      = w_prior.log_prob(w_star)-w_prior.log_prob(w_last)
             
-            log_y_likelihood = torch.distributions.Normal(torch.zeros(w_all[0,:].shape),torch.sqrt(tau2[i]))
-            log_likelihood_ratio = log_y_likelihood.log_prob(self.network)
+            log_likelihood_ratio = (
+                self.log_y_likelihood(w_star.clone(), tau2[i], self.trainx,self.trainy) -             
+                self.log_y_likelihood(w_last.clone(), tau2[i], self.trainx,self.trainy)
+            ) 
+        
             # to calculate the accept reject we need 
             # min(1, pi(w*|x)/pi(wi|x) *  q(wi|w*)/q(w*|wi) )
-            
-            mhprob = 
+            try:
+                mh_prob = min(1, torch.exp(log_proposal_ratio + log_prior_ratio + log_likelihood_ratio))
+            except OverflowError as e:
+                mh_prob = 1
+
+            u = torch.rand(1)
+
+            if u < mh_prob:
+                # Update position 
+                naccept += 1
+                likelihood = likelihood_proposal
+                prior_current = prior_prop
+                w = w_proposal
+                eta = eta_pro
+                if i%10 ==0:
+                    print(i,likelihood, prior_current, diff_prop, rmsetrain, rmsetest, 'accepted')
+                 
+
+                pos_w[i + 1,] = w_proposal
+                pos_tau[i + 1,] = tau_pro
+                fxtrain_samples[i + 1,] = pred_train
+                fxtest_samples[i + 1,] = pred_test
+                rmse_train[i + 1,] = rmsetrain
+                rmse_test[i + 1,] = rmsetest
+
+                plt.plot(x_train, pred_train)
+
+
+            else:
+                pos_w[i + 1,] = pos_w[i,]
+                pos_tau[i + 1,] = pos_tau[i,]
+                fxtrain_samples[i + 1,] = fxtrain_samples[i,]
+                fxtest_samples[i + 1,] = fxtest_samples[i,]
+                rmse_train[i + 1,] = rmse_train[i,]
+                rmse_test[i + 1,] = rmse_test[i,]
 from torchinfo import summary
 if __name__ == '__main__':
     mcmc = MCMC(np.zeros((100,5)),np.zeros((100,1)),np.zeros((100,5)),np.zeros((100,1)),True,1,0.01,1000,networktype='fc',hidden_size=[8,5,2])

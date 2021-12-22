@@ -37,7 +37,7 @@ class FC(nn.Module):
         cumidx = 0
         for p in self.parameters():
             nneurons = torch.numel(p)
-            p.data = w[cumidx:nneurons].reshape(p.data.shape)
+            p.data = w[cumidx:cumidx+nneurons].reshape(p.data.shape)
             cumidx += nneurons
 class MCMC:
     def __init__(self,trainx,trainy,testx,testy, use_langevin,langevin_prob,learning_rate,n_full_batches,networktype = 'fc', hidden_size = [5] ):
@@ -120,15 +120,14 @@ class MCMC:
         """
         # uses default torch init for weights and sample variance as starter (i.e. null model)
         predY = torch.zeros((self.n_iter,len(self.trainy)))
-        predY[0,:] = self.network(self.trainx)
+        predY[0,:] = self.network(self.trainx).flatten()
 
-        self.network(self.trainx)
         tau2     = torch.zeros(self.n_iter)
-        tau2[0]  = np.var(self.trainy) #np.random.rand(np.var(self.trainy))+0.00001
-        w_all    = torch.zeros((self,n_iter,self.n_weights))
+        tau2[0]  = torch.var(self.trainy) #np.random.rand(np.var(self.trainy))+0.00001
+        w_all    = torch.zeros((self.n_iter,self.n_weights))
         w_all[0,:] = self.network.encode()
-        fx_test  = torch.zeros((self.n_iter,)) #
-        fx_train = torch.zeros((self.n_iter,)) # here assumes that y is one dimension
+        fx_test  = torch.zeros((self.n_iter,len(self.testy))) #
+        fx_train = torch.zeros((self.n_iter,len(self.trainy))) # here assumes that y is one dimension
 
         
         w_prior = torch.distributions.Normal(torch.zeros(w_all[0,:].shape),sigma)
@@ -137,9 +136,9 @@ class MCMC:
         
 
         n_accept = 0
-        for i in range(1,self.n_iter+1):
-            tau_posterior_b = b + sum((self.trainy-predY)**2)/2
-            tau2[i] = 1/torch.Gamma(tau_posterior_a,tau_posterior_b).sample() # 1/ for inverse gamma
+        for i in range(1,self.n_iter):
+            tau_posterior_b = b + sum((self.trainy.flatten()-predY[i-1,:])**2)/2 # flatten to change from [n,1] to [n,]
+            tau2[i] = 1/torch.distributions.Gamma(tau_posterior_a,tau_posterior_b).sample() # 1/ for inverse gamma
             
             w_last = w_all[i-1,:]
             # now we propose new w
@@ -171,7 +170,7 @@ class MCMC:
                 log_proposal_ratio = 0
             # pi(w*|y)/pi(wi|y) NOTE: R.C's code sampled both tau and w via MH, i'm sampling only w, hence different prior
             # pi(w*|y) \sim  pi(w*)p(y|w*)
-            log_prior_ratio      = w_prior.log_prob(w_star)-w_prior.log_prob(w_last)
+            log_prior_ratio      = torch.sum(w_prior.log_prob(w_star)-w_prior.log_prob(w_last)) # sum of log of independent weight, wont work with covar matrix
             
             [ln_y_w_star, fx_w_star, rmse_w_star] = self.log_y_likelihood(w_star.clone(), tau2[i], self.trainx,self.trainy)
             [ln_y_w_last, fx_w_last, rmse_w_last] = self.log_y_likelihood(w_last.clone(), tau2[i], self.trainx,self.trainy)
@@ -192,8 +191,8 @@ class MCMC:
 
                 n_accept += 1
                 w_all[i,] = w_star
-                fx_test[i,]  =  fx_w_star_test
-                fx_train[i,] = fx_w_star
+                fx_test[i,]  =  fx_w_star_test.flatten()
+                fx_train[i,] = fx_w_star.flatten()
                 
             else:
                 w_all[i,] = w_all[i-1,]
@@ -208,20 +207,24 @@ if __name__ == '__main__':
     traindata = np.loadtxt("./Code/Bayesian_neuralnetwork-LangevinMCMC/data/Sunspot/train.txt")
     testdata = np.loadtxt("./Code/Bayesian_neuralnetwork-LangevinMCMC/data/Sunspot/test.txt")  #
     name	= "Sunspot"
-    trainx = torch.from_numpy(traindata[:,:-1])
-    trainy = torch.from_numpy(traindata[:,-1])
-    testx  = torch.from_numpy(testdata[:,:-1])
-    testy  = torch.from_numpy(testdata[:,-1])
+    trainx = torch.from_numpy(traindata[:,:-1]).type(torch.FloatTensor)
+    trainy = torch.from_numpy(traindata[:,-1]).type(torch.FloatTensor).reshape((len(traindata),1))
+    testx  = torch.from_numpy(testdata[:,:-1]).type(torch.FloatTensor)
+    testy  = torch.from_numpy(testdata[:,-1]).type(torch.FloatTensor).reshape((len(testdata),1))
 
     num_samples = 1000
-    mcmc = MCMC(trainx,trainy,testx,testy,True,1,0.01,num_samples,networktype='fc',hidden_size=[8,5,2])
+    mcmc = MCMC(trainx,trainy,testx,testy,True,1,0.01,num_samples,networktype='fc',hidden_size=[4])
     print(mcmc.network)
     #batch_size = 10
     #summary(mcmc.network,input_size=(batch_size,5))
 
-    a = 0.1
-    b = 0.1
-    sigma = 0.025
+    #a = 0.1
+    #b = 0.1
+    #sigma = 0.025
+    a = 1
+    b = 1
+    sigma = 2
+
     [tau2, w_all,fx_train,fx_test,accept_ratio] = mcmc.sample(a,b,sigma)
 
     bp = 1

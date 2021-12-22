@@ -106,10 +106,10 @@ class MCMC:
             
             self.loss = nn.MSELoss()
             self.optimiser = torch.optim.SGD(self.network.parameters(),lr = learning_rate)
-
     def log_y_likelihood(self,w,tau2,x,y):
         self.network.decode(w.clone())
-        return torch.log(torch.sqrt(tau2))*len(y)/2 - torch.sum( (y-self.network(x))**2)/(2*tau2)
+        predy = self.network(x)
+        return [torch.log(torch.sqrt(tau2))*len(y)/2 - torch.sum( (y-predy)**2)/(2*tau2), predy ,self.loss(y,predy)]
     def sample(self, a,b,sigma):
         """[summary]
 
@@ -123,14 +123,20 @@ class MCMC:
         predY[0,:] = self.network(self.trainx)
 
         self.network(self.trainx)
-        tau2 = torch.zeros(self.n_iter)
-        tau2[0] = np.var(self.trainy) #np.random.rand(np.var(self.trainy))+0.00001
+        tau2     = torch.zeros(self.n_iter)
+        tau2[0]  = np.var(self.trainy) #np.random.rand(np.var(self.trainy))+0.00001
         w_all    = torch.zeros((self,n_iter,self.n_weights))
         w_all[0,:] = self.network.encode()
+        fx_test  = torch.zeros((self.n_iter,)) #
+        fx_train = torch.zeros((self.n_iter,)) # here assumes that y is one dimension
+
+        
         w_prior = torch.distributions.Normal(torch.zeros(w_all[0,:].shape),sigma)
         
         tau_posterior_a = self.n_weights + a + 1
         
+
+        n_accept = 0
         for i in range(1,self.n_iter+1):
             tau_posterior_b = b + sum((self.trainy-predY)**2)/2
             tau2[i] = 1/torch.Gamma(tau_posterior_a,tau_posterior_b).sample() # 1/ for inverse gamma
@@ -167,10 +173,9 @@ class MCMC:
             # pi(w*|y) \sim  pi(w*)p(y|w*)
             log_prior_ratio      = w_prior.log_prob(w_star)-w_prior.log_prob(w_last)
             
-            log_likelihood_ratio = (
-                self.log_y_likelihood(w_star.clone(), tau2[i], self.trainx,self.trainy) -             
-                self.log_y_likelihood(w_last.clone(), tau2[i], self.trainx,self.trainy)
-            ) 
+            [ln_y_w_star, fx_w_star, rmse_w_star] = self.log_y_likelihood(w_star.clone(), tau2[i], self.trainx,self.trainy)
+            [ln_y_w_last, fx_w_last, rmse_w_last] = self.log_y_likelihood(w_last.clone(), tau2[i], self.trainx,self.trainy)
+            log_likelihood_ratio = ln_y_w_star - ln_y_w_last
         
             # to calculate the accept reject we need 
             # min(1, pi(w*|x)/pi(wi|x) *  q(wi|w*)/q(w*|wi) )
@@ -183,37 +188,40 @@ class MCMC:
 
             if u < mh_prob:
                 # Update position 
-                naccept += 1
-                likelihood = likelihood_proposal
-                prior_current = prior_prop
-                w = w_proposal
-                eta = eta_pro
-                if i%10 ==0:
-                    print(i,likelihood, prior_current, diff_prop, rmsetrain, rmsetest, 'accepted')
-                 
+                [ln_y_w_star_test, fx_w_star_test, rmse_w_star] = self.log_y_likelihood(w_star.clone(), tau2[i], self.testx,self.testy)
 
-                pos_w[i + 1,] = w_proposal
-                pos_tau[i + 1,] = tau_pro
-                fxtrain_samples[i + 1,] = pred_train
-                fxtest_samples[i + 1,] = pred_test
-                rmse_train[i + 1,] = rmsetrain
-                rmse_test[i + 1,] = rmsetest
-
-                plt.plot(x_train, pred_train)
-
-
+                n_accept += 1
+                w_all[i,] = w_star
+                fx_test[i,]  =  fx_w_star_test
+                fx_train[i,] = fx_w_star
+                
             else:
-                pos_w[i + 1,] = pos_w[i,]
-                pos_tau[i + 1,] = pos_tau[i,]
-                fxtrain_samples[i + 1,] = fxtrain_samples[i,]
-                fxtest_samples[i + 1,] = fxtest_samples[i,]
-                rmse_train[i + 1,] = rmse_train[i,]
-                rmse_test[i + 1,] = rmse_test[i,]
+                w_all[i,] = w_all[i-1,]
+
+                fx_test[i,] = fx_test[i-1,] 
+                fx_train[i,]= fx_train[i-1,]
+        accept_ratio = n_accept/self.n_iter
+                # temporarily ignoring rmse statistic, just want to get thinks working
+        return [tau2, w_all,fx_train,fx_test,accept_ratio]
 from torchinfo import summary
 if __name__ == '__main__':
-    mcmc = MCMC(np.zeros((100,5)),np.zeros((100,1)),np.zeros((100,5)),np.zeros((100,1)),True,1,0.01,1000,networktype='fc',hidden_size=[8,5,2])
-    print(mcmc.network)
-    batch_size = 10
-    summary(mcmc.network,input_size=(batch_size,5))
+    traindata = np.loadtxt("./Code/Bayesian_neuralnetwork-LangevinMCMC/data/Sunspot/train.txt")
+    testdata = np.loadtxt("./Code/Bayesian_neuralnetwork-LangevinMCMC/data/Sunspot/test.txt")  #
+    name	= "Sunspot"
+    trainx = torch.from_numpy(traindata[:,:-1])
+    trainy = torch.from_numpy(traindata[:,-1])
+    testx  = torch.from_numpy(testdata[:,:-1])
+    testy  = torch.from_numpy(testdata[:,-1])
 
-    
+    num_samples = 1000
+    mcmc = MCMC(trainx,trainy,testx,testy,True,1,0.01,num_samples,networktype='fc',hidden_size=[8,5,2])
+    print(mcmc.network)
+    #batch_size = 10
+    #summary(mcmc.network,input_size=(batch_size,5))
+
+    a = 0.1
+    b = 0.1
+    sigma = 0.025
+    [tau2, w_all,fx_train,fx_test,accept_ratio] = mcmc.sample(a,b,sigma)
+
+    bp = 1

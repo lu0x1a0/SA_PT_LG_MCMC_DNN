@@ -188,12 +188,12 @@ class MCMC:
             if u < mh_prob:
                 # Update position 
                 [ln_y_w_star_test, fx_w_star_test, rmse_w_star] = self.log_y_likelihood(w_star.clone(), tau2[i], self.testx,self.testy)
-
                 n_accept += 1
                 w_all[i,] = w_star
                 fx_test[i,]  =  fx_w_star_test.flatten()
                 fx_train[i,] = fx_w_star.flatten()
-                
+                if n_accept%20 == 0:
+                    print("n_accepted:", n_accept," iter:",i," rmse_w_star:",rmse_w_star)                
             else:
                 w_all[i,] = w_all[i-1,]
 
@@ -203,6 +203,7 @@ class MCMC:
                 # temporarily ignoring rmse statistic, just want to get thinks working
         return [tau2, w_all,fx_train,fx_test,accept_ratio]
 from torchinfo import summary
+from time import time
 if __name__ == '__main__':
     traindata = np.loadtxt("./Code/Bayesian_neuralnetwork-LangevinMCMC/data/Sunspot/train.txt")
     testdata = np.loadtxt("./Code/Bayesian_neuralnetwork-LangevinMCMC/data/Sunspot/test.txt")  #
@@ -212,7 +213,9 @@ if __name__ == '__main__':
     testx  = torch.from_numpy(testdata[:,:-1]).type(torch.FloatTensor)
     testy  = torch.from_numpy(testdata[:,-1]).type(torch.FloatTensor).reshape((len(testdata),1))
 
-    num_samples = 1000
+    print("start Sampling")
+    t = time()
+    num_samples = 20000
     mcmc = MCMC(trainx,trainy,testx,testy,True,1,0.01,num_samples,networktype='fc',hidden_size=[4])
     print(mcmc.network)
     #batch_size = 10
@@ -221,10 +224,19 @@ if __name__ == '__main__':
     #a = 0.1
     #b = 0.1
     #sigma = 0.025
-    a = 1
-    b = 1
-    sigma = 2
+    a = 0.001
+    b = 1#0.001
+    sigma = 1.5
 
     [tau2, w_all,fx_train,fx_test,accept_ratio] = mcmc.sample(a,b,sigma)
-
+    print("END sampling:",time()-t)
+    print(accept_ratio)
+    burn = 0.5
+    fig, axs = plt.subplots(3)
+    fig.suptitle('first is real, 2nd is predict')
+    axs[0].plot(trainy.detach().numpy())
+    axs[1].plot(fx_train[int(burn*len(fx_train)):].mean(axis = 0).detach().numpy())
+    axs[2].plot(w_all[int(burn*len(fx_train)):,-1].detach().numpy())
+    #fig.show()
+    plt.savefig("paremeter_testing_"+str(a)+"_"+str(b)+"_"+str(sigma)+"_"+str(num_samples)+".png")
     bp = 1
